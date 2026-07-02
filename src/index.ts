@@ -70,6 +70,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           required: ['name'],
         },
       },
+      {
+        name: 'update_task_status',
+        description: 'Update the status of an existing task in the Notion database.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            task_id: {
+              type: 'string',
+              description: 'The ID of the task/page in Notion.',
+            },
+            status: {
+              type: 'string',
+              description: 'The new status name (e.g. Backlog, Todo, In Progress, Done, Not started).',
+            },
+          },
+          required: ['task_id', 'status'],
+        },
+      },
     ],
   };
 });
@@ -86,26 +104,37 @@ async function resolveDatabaseProperties(dbId: string) {
     const dataSource = await notion.dataSources.retrieve({ data_source_id: dataSourceId }) as any;
     const props = dataSource.properties || db.properties || {};
 
-    // Find the title property
+    // Find the title property (type === 'title')
     const nameKey = Object.keys(props).find(
       key => props[key].type === 'title'
     ) || 'Name';
 
-    // Find Status property (Status or Select)
+    // Find Status property (type === 'status' first, or select named status/estado)
     const statusKey = Object.keys(props).find(
-      key => key.toLowerCase() === 'status' && (props[key].type === 'status' || props[key].type === 'select')
+      key => props[key].type === 'status'
+    ) || Object.keys(props).find(
+      key => (key.toLowerCase() === 'status' || key.toLowerCase() === 'estado') && props[key].type === 'select'
     ) || 'Status';
     const statusType = props[statusKey]?.type || 'status';
 
-    // Find Priority property (Select or Status)
+    // Find Priority property (select/status named priority/prioridad, or select with priority options)
     const priorityKey = Object.keys(props).find(
-      key => key.toLowerCase() === 'priority' && (props[key].type === 'select' || props[key].type === 'status')
+      key => (key.toLowerCase() === 'priority' || key.toLowerCase() === 'prioridad') && (props[key].type === 'select' || props[key].type === 'status')
+    ) || Object.keys(props).find(
+      key => props[key].type === 'select' && 
+        Array.isArray(props[key].select?.options) && 
+        props[key].select.options.some((opt: any) => 
+          ['high', 'medium', 'low', 'alta', 'media', 'baja'].includes(opt.name.toLowerCase())
+        )
     ) || 'Priority';
     const priorityType = props[priorityKey]?.type || 'select';
 
-    // Find Due Date property (Date)
+    // Find Due Date property (date with terms in name or just any date property)
     const dueDateKey = Object.keys(props).find(
-      key => (key.toLowerCase() === 'due date' || key.toLowerCase() === 'due_date') && props[key].type === 'date'
+      key => props[key].type === 'date' && 
+        ['due date', 'due_date', 'fecha', 'vencimiento', 'entrega', 'fecha de entrega', 'fecha de vencimiento', 'due'].some(term => key.toLowerCase().includes(term))
+    ) || Object.keys(props).find(
+      key => props[key].type === 'date'
     ) || 'Due Date';
 
     return { nameKey, statusKey, statusType, priorityKey, priorityType, dueDateKey, dataSourceId };
@@ -151,14 +180,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      // Query the associated data source
-      const response = await notion.dataSources.query({
-        data_source_id: keys.dataSourceId,
-        filter,
-        result_type: 'page',
-      }) as any;
+      // Query the associated data source with pagination
+      const results: any[] = [];
+      let hasMore = true;
+      let startCursor: string | undefined = undefined;
 
-      const tasks = response.results.map((page: any) => {
+      while (hasMore) {
+        const response = await notion.dataSources.query({
+          data_source_id: keys.dataSourceId,
+          filter,
+          result_type: 'page',
+          start_cursor: startCursor,
+        }) as any;
+
+        results.push(...response.results);
+        hasMore = response.has_more;
+        startCursor = response.next_cursor || undefined;
+      }
+
+      const tasks = results.map((page: any) => {
         const props = page.properties;
         
         let taskName = 'Untitled';
@@ -304,6 +344,43 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           {
             type: 'text',
             text: `Successfully created task "${taskArgs.name}" with ID: ${newPage.id}\nURL: ${(newPage as any).url || 'N/A'}`,
+          },
+        ],
+      };
+    }
+
+    if (name === 'update_task_status') {
+      const taskArgs = args as { task_id: string; status: string };
+      if (!taskArgs || typeof taskArgs.task_id !== 'string' || typeof taskArgs.status !== 'string') {
+        throw new Error('Missing or invalid required arguments: task_id and status');
+      }
+
+      const properties: Record<string, any> = {};
+
+      if (keys.statusType === 'status') {
+        properties[keys.statusKey] = {
+          status: {
+            name: taskArgs.status,
+          },
+        };
+      } else {
+        properties[keys.statusKey] = {
+          select: {
+            name: taskArgs.status,
+          },
+        };
+      }
+
+      const updatedPage = await notion.pages.update({
+        page_id: taskArgs.task_id,
+        properties,
+      } as any);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Successfully updated task status to "${taskArgs.status}" for task ID: ${updatedPage.id}\nURL: ${(updatedPage as any).url || 'N/A'}`,
           },
         ],
       };
