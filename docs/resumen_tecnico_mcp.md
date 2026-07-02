@@ -63,9 +63,9 @@ La conexión entre Claude y el servidor se realiza mediante el siguiente bloque 
 {
   "mcpServers": {
     "notion-sprint-manager": {
-      "command": "C:/Program Files/nodejs/node.exe",
+      "command": "node",
       "args": [
-        "C:/Users/Admin/Desktop/LabsNegocios/mcp-notion-server/dist/index.js"
+        "/ruta/absoluta/a/mcp-notion-server/dist/index.js"
       ],
       "env": {
         "NOTION_TOKEN": "ntn_...",
